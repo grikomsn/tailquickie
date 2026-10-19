@@ -12,6 +12,7 @@ ENV TS_USERSPACE=true \
     TS_STATE_DIR=/var/lib/tailscale \
     TS_HOSTNAME=tailquickie \
     TS_ACCEPT_DNS=false \
+    TS_EXTRA_ARGS="--advertise-exit-node --accept-routes --ssh" \
     TS_ENABLE_HEALTH_CHECK=true \
     TS_ENABLE_METRICS=false
 

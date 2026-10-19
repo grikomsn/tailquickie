@@ -1,6 +1,6 @@
 # tailquickie
 
-Deploy a standalone Tailscale node from this repository to a Docker-capable PaaS. Set an auth key, attach a state volume, and deploy. The image runs the official Tailscale supervisor with userspace networking, so it needs no privileged mode, `NET_ADMIN`, or `/dev/net/tun`.
+Deploy a standalone Tailscale node from this repository to a Docker-capable PaaS. Set an auth key, attach a state volume, and deploy. Exit-node advertising, accepting subnet routes, and Tailscale SSH are enabled by default. The image runs the official Tailscale supervisor with userspace networking, so it needs no privileged mode, `NET_ADMIN`, or `/dev/net/tun`.
 
 Based on [`tailscale/tailscale:v1.104.1`](https://github.com/tailscale/tailscale/releases/tag/v1.104.1), the latest stable release checked on October 19, 2026. The Dockerfile pins the multi-platform image digest. Dependabot checks for image and GitHub Actions updates weekly.
 
@@ -11,6 +11,7 @@ Based on [`tailscale/tailscale:v1.104.1`](https://github.com/tailscale/tailscale
 3. Set `TS_AUTHKEY` as a runtime secret and choose `TS_HOSTNAME`, for example `tailquickie-singapore`. Never supply the key as a build argument or commit it.
 4. Mount a persistent volume at **`/var/lib/tailscale`**. Run **one replica per volume**; each independent node needs its own state and hostname. Keep the service always running and disable scale-to-zero or sleeping.
 5. Configure an HTTP health check at **`/healthz`** on the platform's `PORT` (defaults to `8080`). Allow at least 60 seconds for startup. Confirm the hostname appears online in the Tailscale admin console.
+6. Approve the advertised exit node (or configure `autoApprovers`), then select it on the clients that should use it. Configure [Tailscale SSH access rules](https://tailscale.com/docs/features/tailscale-ssh) to allow the intended users to connect.
 
 Only the health endpoint needs the platform's HTTP listener; no public domain or inbound Tailscale port is required. Outbound internet access to Tailscale's control/relay services is required. Restricted UDP can force relayed connections; see [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
 
@@ -36,7 +37,7 @@ If persistence is unavailable, use a **reusable, ephemeral** auth key instead. E
 
 Dalang's deployment log shows it extracts the Docker image into an Incus system container and creates `/etc/init.d/dalang-app` and `/app/start.sh`. The official Tailscale image lacks `/app` and OpenRC. This project's image includes OpenRC and uses `/app` as its working directory so those startup files can be created. OpenRC preserves the container's runtime environment, including Tailscale credentials and `PORT`, when launching the service. Normal Docker deployments still start `containerboot` directly as PID 1.
 
-Keep the detected start command `/usr/local/bin/entrypoint.sh /usr/local/bin/containerboot`, set the application's port to `8080`, supply `TS_AUTHKEY` as a runtime variable, and retain `/var/lib/tailscale` across deployments. If the platform does not preserve Docker `ENV` metadata during conversion, explicitly set `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=true`, and `TS_ENABLE_HEALTH_CHECK=true` in its runtime settings as well.
+Keep the detected start command `/usr/local/bin/entrypoint.sh /usr/local/bin/containerboot`, set the application's port to `8080`, supply `TS_AUTHKEY` as a runtime variable, and retain `/var/lib/tailscale` across deployments. If the platform does not preserve Docker `ENV` metadata during conversion, explicitly set `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=true`, `TS_ENABLE_HEALTH_CHECK=true`, and `TS_EXTRA_ARGS="--advertise-exit-node --accept-routes --ssh"` in its runtime settings as well.
 
 The log's `HEALTHCHECK is not supported for OCI image format` warning means the builder discarded Docker's health-check metadata; configure the platform's HTTP probe to request `/healthz` separately. A request to `/` returns `404`. The storage-limit warning about overriding a profile device is a separate host configuration issue. A successful image import or proxy registration does not confirm the application started: check `/healthz` and the Tailscale admin console after redeploying.
 
@@ -71,6 +72,7 @@ All official [Tailscale Docker environment variables](https://tailscale.com/docs
 | `TS_AUTH_ONCE` | `true` | Reuse authenticated state on restart. |
 | `TS_USERSPACE` | `true` | Run without a kernel tunnel device. |
 | `TS_ACCEPT_DNS` | `false` | Keep the platform's resolver. |
+| `TS_EXTRA_ARGS` | `--advertise-exit-node --accept-routes --ssh` | Offer internet egress, accept advertised subnet routes, and enable Tailscale SSH. |
 | `PORT` | `8080` | Runtime HTTP health port. |
 | `TS_LOCAL_ADDR_PORT` | `0.0.0.0:$PORT` | Explicit override for the health listener; match the PaaS health port. |
 | `TS_ENABLE_HEALTH_CHECK` | `true` | Enable readiness checks; keep enabled for the supplied Docker/PaaS checks. |
@@ -80,17 +82,19 @@ All official [Tailscale Docker environment variables](https://tailscale.com/docs
 
 After successful enrollment, you may remove `TS_AUTHKEY` while retaining the state volume. State contains private keys: protect it as a secret, do not share it between running instances, and back it up securely. If you revoke the node, lose state, or need to reauthenticate, provide a valid key again.
 
-### Exit nodes and subnet routes
+### Exit nodes, subnet routes, and SSH
 
-The default is an ordinary node. To offer internet egress, set:
+The image enables these flags by default:
 
 ```dotenv
-TS_EXTRA_ARGS=--advertise-exit-node
+TS_EXTRA_ARGS="--advertise-exit-node --accept-routes --ssh"
 ```
 
-Approve the exit node in the Tailscale admin console, then select it on your client. To advertise a network reachable **from this container**, set `TS_ROUTES=10.0.0.0/24` and approve the route. Tailnet access rules and provider networking restrictions still apply. To combine flags, put them in the same `TS_EXTRA_ARGS` value, for example `--advertise-exit-node --advertise-tags=tag:server`.
+Approve the exit node in the Tailscale admin console, then select it on your client. Accepting other nodes' subnet routes does not advertise the container's own networks. To advertise a network reachable **from this container**, set `TS_ROUTES=10.0.0.0/24` and approve the route. Tailnet access rules and provider networking restrictions still apply. Tailscale SSH also requires an SSH access rule in your tailnet policy and a valid user account in this container; it provides access to the container, not the PaaS host.
 
-Set `TS_EXTRA_ARGS` before first enrollment. With `TS_AUTH_ONCE=true`, upstream only applies those extra flags during login; changing them on an already-enrolled volume does not rerun login. For an existing node, use the service's shell to run `tailscale set --advertise-exit-node=true` (locally: `docker compose exec tailscale tailscale set --advertise-exit-node=true`). `TS_HOSTNAME`, `TS_ACCEPT_DNS`, and `TS_ROUTES` do update on restart. See the [pinned upstream startup code](https://github.com/tailscale/tailscale/blob/v1.104.1/cmd/containerboot/tailscaled.go).
+Setting `TS_EXTRA_ARGS` replaces the whole default value. Preserve all three flags when adding options, for example `--advertise-exit-node --accept-routes --ssh --advertise-tags=tag:server`. To disable a feature explicitly, use `--advertise-exit-node=false`, `--accept-routes=false`, or `--ssh=false` in your replacement value.
+
+With `TS_AUTH_ONCE=true`, upstream only applies `TS_EXTRA_ARGS` during login; changing it on an already-enrolled volume does not rerun login. To apply these defaults to an existing node, use the service's shell to run `tailscale set --advertise-exit-node --accept-routes --ssh` (locally: `docker compose exec tailscale tailscale set --advertise-exit-node --accept-routes --ssh`). `TS_HOSTNAME`, `TS_ACCEPT_DNS`, and `TS_ROUTES` do update on restart. See the [pinned upstream startup code](https://github.com/tailscale/tailscale/blob/v1.104.1/cmd/containerboot/tailscaled.go).
 
 [Userspace routers](https://tailscale.com/docs/reference/kernel-vs-userspace-routers) support TCP/UDP forwarding and relayed pings, with limitations for other protocols. For heavier routing workloads, use a host that supports kernel networking: set `TS_USERSPACE=false`, expose `/dev/net/tun`, grant the required network capabilities, and configure IP forwarding. The supplied PaaS configs use userspace mode.
 
