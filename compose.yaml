@@ -1,0 +1,15 @@
+services:
+  tailscale:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    ports:
+      - "127.0.0.1:${PORT:-8080}:${PORT:-8080}"
+
+volumes:
+  tailscale-state:

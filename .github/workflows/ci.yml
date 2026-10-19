@@ -1,0 +1,23 @@
+name: Container checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check Dockerfile
+        run: docker build --check .
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config --quiet
+      - name: Build image
+        run: docker build -t tailquickie:test .
+      - name: Test container startup and configuration
+        run: python3 tests/smoke.py
