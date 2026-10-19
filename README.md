@@ -32,6 +32,16 @@ Use a long-running Docker service or worker with a persistent filesystem and out
 
 If persistence is unavailable, use a **reusable, ephemeral** auth key instead. Each new filesystem registers a fresh node, so its IP/identity can change; the offline ephemeral device is later removed. This is an alternative deployment model, not a persistent node.
 
+### Dalang / Docker-to-Incus hosts
+
+Dalang's deployment log shows it extracts the Docker image into an Incus system container and creates `/etc/init.d/dalang-app` and `/app/start.sh`. The official Tailscale image lacks `/app` and OpenRC. This project's image includes OpenRC and uses `/app` as its working directory so those startup files can be created. OpenRC preserves the container's runtime environment, including Tailscale credentials and `PORT`, when launching the service. Normal Docker deployments still start `containerboot` directly as PID 1.
+
+Keep the detected start command `/usr/local/bin/entrypoint.sh /usr/local/bin/containerboot`, set the application's port to `8080`, supply `TS_AUTHKEY` as a runtime variable, and retain `/var/lib/tailscale` across deployments. If the platform does not preserve Docker `ENV` metadata during conversion, explicitly set `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=true`, and `TS_ENABLE_HEALTH_CHECK=true` in its runtime settings as well.
+
+The log's `HEALTHCHECK is not supported for OCI image format` warning means the builder discarded Docker's health-check metadata; configure the platform's HTTP probe to request `/healthz` separately. A request to `/` returns `404`. The storage-limit warning about overriding a profile device is a separate host configuration issue. A successful image import or proxy registration does not confirm the application started: check `/healthz` and the Tailscale admin console after redeploying.
+
+The regression test simulates OpenRC service creation, registration, startup, and shutdown inside Docker. It does not reproduce Dalang's full Incus conversion, cgroup delegation, runtime-variable injection, or actual tailnet enrollment. See [Alpine OpenRC documentation](https://wiki.alpinelinux.org/wiki/OpenRC) for the service manager used by this compatibility layer.
+
 ## Run locally
 
 ```sh
@@ -101,7 +111,7 @@ docker build -t tailquickie:test .
 python3 tests/smoke.py
 ```
 
-The smoke test checks port handling, command passthrough, daemon startup with all Linux capabilities dropped, readiness failure before login, disabled metrics, state retention, and clean shutdown. It runs without network access and does not authenticate against a live tailnet. After deployment, verify a real enrollment, restart with the same volume, and test the peer or exit route you intend to use.
+The smoke test checks port handling, command passthrough, daemon startup with all Linux capabilities dropped, readiness failure before login, disabled metrics, state retention, clean shutdown, and OpenRC service launches. It runs without network access and does not authenticate against a live tailnet. After deployment, verify a real enrollment, restart with the same volume, and test the peer or exit route you intend to use.
 
 To update Tailscale, verify the current stable release and multi-platform digest, change the Dockerfile's tag and digest together, run these checks, and redeploy with the existing state volume.
 
