@@ -2,3 +2,9 @@
 !Dockerfile
 !scripts/
 !scripts/*.sh
+!app/
+!app/*.py
+!config/
+!config/web-auth.json
+**/__pycache__/
+**/*.pyc

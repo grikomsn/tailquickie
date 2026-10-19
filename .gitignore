@@ -5,3 +5,4 @@
 __pycache__/
 *.pyc
 tailscale-state/
+.tailquickie-credentials.txt

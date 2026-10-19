@@ -1,112 +1,110 @@
 # tailquickie
 
-Deploy a standalone Tailscale node from this repository to a Docker-capable PaaS. Set an auth key, attach a state volume, and deploy. Exit-node advertising, accepting subnet routes, and Tailscale SSH are enabled by default. The image runs the official Tailscale supervisor with userspace networking, so it needs no privileged mode, `NET_ADMIN`, or `/dev/net/tun`.
+Deploy a Tailscale node to a Docker-capable PaaS and sign it in through your browser. No PaaS environment editor or Tailscale auth key is required. The public page is protected with a separate setup password.
 
-Based on [`tailscale/tailscale:v1.104.1`](https://github.com/tailscale/tailscale/releases/tag/v1.104.1), the latest stable release checked on October 19, 2026. The Dockerfile pins the multi-platform image digest. Dependabot checks for image and GitHub Actions updates weekly.
+The image uses the official, digest-pinned [`tailscale/tailscale:v1.104.1`](https://github.com/tailscale/tailscale/releases/tag/v1.104.1), checked on October 19, 2026. Userspace networking needs no privileged mode, `NET_ADMIN`, or `/dev/net/tun`. Exit-node advertising, accepting subnet routes, and Tailscale SSH remain enabled by default.
 
-## Deploy
+## Deploy and sign in
 
-1. Generate an [auth key](https://tailscale.com/docs/features/access-control/auth-keys) in your Tailscale admin console. For a lasting node, leave **Ephemeral** off. Use a tagged key for a server, and enable **Pre-approved** if your tailnet requires device approval. A single-use key works with persistent state; a reusable key also permits recovery if that state is lost.
-2. Connect this repository to a PaaS as a Docker service. Use the root `Dockerfile` and its default start command.
-3. Set `TS_AUTHKEY` as a runtime secret and choose `TS_HOSTNAME`, for example `tailquickie-singapore`. Never supply the key as a build argument or commit it.
-4. Mount a persistent volume at **`/var/lib/tailscale`**. Run **one replica per volume**; each independent node needs its own state and hostname. Keep the service always running and disable scale-to-zero or sleeping.
-5. Configure an HTTP health check at **`/healthz`** on the platform's `PORT` (defaults to `8080`). Allow at least 60 seconds for startup. Confirm the hostname appears online in the Tailscale admin console.
-6. Approve the advertised exit node (or configure `autoApprovers`), then select it on the clients that should use it. Configure [Tailscale SSH access rules](https://tailscale.com/docs/features/tailscale-ssh) to allow the intended users to connect.
+1. Connect this repository to your PaaS using the root `Dockerfile`. Keep its detected start command. The application listens on port **8080**, or the platform's `PORT` when provided.
+2. Publish the service through the platform's **HTTPS** URL. Use **`/healthz`** for its HTTP health check.
+3. Open that URL. Your browser prompts for username **`admin`** and the generated setup password. For this checkout, the password is in **`.tailquickie-credentials.txt`**, a private local file ignored by Git and Docker.
+4. The page behind that password is Tailscale's native web client. Choose **Connect** or **Sign in** and follow the Tailscale login link to authorize the node in your tailnet. This signs the node in without `TS_AUTHKEY`.
+5. Confirm the node is online in the Tailscale admin console. Approve its exit-node advertisement before selecting it on a client. Tailscale SSH also needs an appropriate SSH access rule and an existing user account in the container.
+6. Preserve **`/var/lib/tailscale`** across restarts and redeployments. Each node needs its own state directory and one running instance. Keep the service always running, with sleeping or scale-to-zero disabled.
 
-Only the health endpoint needs the platform's HTTP listener; no public domain or inbound Tailscale port is required. Outbound internet access to Tailscale's control/relay services is required. Restricted UDP can force relayed connections; see [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
+The setup password protects this public device-login interface; your Tailscale account login authorizes the device itself. Use HTTPS for a remote deployment. The local loopback URL can use HTTP for development.
 
-### Railway
+## Setup password
 
-Import the GitHub repository, set `TS_AUTHKEY` and `TS_HOSTNAME`, and add a volume mounted at `/var/lib/tailscale` **before the first successful deployment**. `railway.json` selects the Dockerfile, `/healthz`, and restart-on-failure with up to ten retries. Leave the start command unset. Railway supplies `PORT`; you can also set it explicitly to `8080`.
+Only a salted scrypt password verifier is committed in `config/web-auth.json`. The plaintext password is generated locally and written to `.tailquickie-credentials.txt` with owner-only permissions. It is not included in the image or Git history.
 
-Volume creation and secrets are dashboard steps, not provisions in `railway.json`. Railway checks readiness during deployment only; use separate monitoring if you need ongoing alerts. See [config as code](https://docs.railway.com/config-as-code/reference) and [health checks](https://docs.railway.com/deployments/healthchecks).
+If you fork or clone the project and do not have its setup password, generate your own **before building or deploying**:
 
-### Render
+```sh
+python3 scripts/setup-password.py --rotate
+cat .tailquickie-credentials.txt
+```
 
-Create a **Blueprint** from this repository. `render.yaml` creates the Docker web service and a 1 GB state disk, and prompts for `TS_AUTHKEY`. Set a distinct `TS_HOSTNAME` if deploying multiple services.
+Commit the updated `config/web-auth.json` and rebuild. Keep the plaintext credentials file private. Rotation changes the setup password without deleting the node's Tailscale identity. Existing browser credentials may need to be replaced when the browser prompts again.
 
-The Blueprint selects the paid `0.5c-512mb` plan because persistent disks require a paid service. Review the plan and storage charges before creating it. The service uses Render's `PORT` and `/healthz`. A disk-backed service has brief downtime during deployments. See [Blueprint configuration](https://render.com/docs/blueprint-spec), [compute plans](https://render.com/docs/compute-plans), and [persistent disks](https://render.com/docs/disks).
+The gateway requires the password for the native web UI, its APIs, and `/status`. It limits concurrent requests and failed password attempts, and rejects cross-origin writes. Native UI and daemon-health listeners bind only to loopback. No first-visitor signup or publicly readable login link is exposed.
 
-### Other platforms
+## Health and diagnostics
 
-Use a long-running Docker service or worker with a persistent filesystem and outbound network access. Supply the secret and volume above. For an HTTP service, configure its health path explicitly: `/` intentionally returns `404`. For workers, the HTTP port need not be published. Request-based serverless services that suspend the container are a poor fit for an always-online node.
+| Path | Access | Meaning |
+| --- | --- | --- |
+| `/` | Setup password | Native Tailscale browser client and interactive login. |
+| `/healthz` | Public | `200` when bootstrap and the native UI processes are running; suitable for deployment checks before login. |
+| `/readyz` | Public | `200` once Tailscale reports a tailnet IP, otherwise `503`. It does not prove peer or exit-route connectivity. |
+| `/status` | Setup password | Backend state, tailnet IPs, health warnings, and bootstrap restart count. Useful when the platform has no runtime logs. |
 
-If persistence is unavailable, use a **reusable, ephemeral** auth key instead. Each new filesystem registers a fresh node, so its IP/identity can change; the offline ephemeral device is later removed. This is an alternative deployment model, not a persistent node.
+**The meaning of `/healthz` changed:** it now checks onboarding availability, so the PaaS does not kill a deployment while you are signing in. Use `/readyz` to monitor enrollment separately.
 
-### Dalang / Docker-to-Incus hosts
+The supervisor runs the official `containerboot` and `tailscale web` together. Bootstrap gets a 24-hour login window and restarts if it exits, while the password gate stays available. A small init process reaps child processes and forwards shutdown signals. No Tailscale key is baked into the Dockerfile.
 
-Dalang's deployment log shows it extracts the Docker image into an Incus system container and creates `/etc/init.d/dalang-app` and `/app/start.sh`. The official Tailscale image lacks `/app` and OpenRC. This project's image includes OpenRC and uses `/app` as its working directory so those startup files can be created. OpenRC preserves the container's runtime environment, including Tailscale credentials and `PORT`, when launching the service. Normal Docker deployments still start `containerboot` directly as PID 1.
+## Dalang / Docker-to-Incus hosts
 
-Keep the detected start command `/usr/local/bin/entrypoint.sh /usr/local/bin/containerboot`, set the application's port to `8080`, supply `TS_AUTHKEY` as a runtime variable, and retain `/var/lib/tailscale` across deployments. If the platform does not preserve Docker `ENV` metadata during conversion, explicitly set `TS_STATE_DIR=/var/lib/tailscale`, `TS_USERSPACE=true`, `TS_ENABLE_HEALTH_CHECK=true`, and `TS_EXTRA_ARGS="--advertise-exit-node --accept-routes --ssh"` in its runtime settings as well.
+Dalang converts the Docker root filesystem into an Incus system container and generates OpenRC service files. The image includes OpenRC and `/app`. Startup defaults live in the entrypoint script, so they still apply if conversion drops Docker's `ENV` metadata. OpenRC preserves the runtime environment.
 
-The log's `HEALTHCHECK is not supported for OCI image format` warning means the builder discarded Docker's health-check metadata; configure the platform's HTTP probe to request `/healthz` separately. A request to `/` returns `404`. The storage-limit warning about overriding a profile device is a separate host configuration issue. A successful image import or proxy registration does not confirm the application started: check `/healthz` and the Tailscale admin console after redeploying.
+Redeploy the latest commit and let Dalang detect the new command:
 
-The regression test simulates OpenRC service creation, registration, startup, and shutdown inside Docker. It does not reproduce Dalang's full Incus conversion, cgroup delegation, runtime-variable injection, or actual tailnet enrollment. See [Alpine OpenRC documentation](https://wiki.alpinelinux.org/wiki/OpenRC) for the service manager used by this compatibility layer.
+```text
+/sbin/tini -s -- /usr/local/bin/entrypoint.sh python3 /app/server.py
+```
+
+Keep the public port at **8080**, open the HTTPS URL, enter the setup password, and use the native Tailscale login page. No dashboard environment fields are needed. The Incus container's filesystem may survive a restart, but identity retention across a redeploy still depends on Dalang preserving `/var/lib/tailscale`.
+
+Dalang's `HEALTHCHECK is not supported for OCI image format` warning means it discarded Docker's health-check metadata. Configure the HTTP probe at `/healthz` if the platform supports it. Its storage-limit warning about overriding a profile device is a separate host configuration issue.
+
+A service-start success message does not prove the process stayed alive. If the URL returns `502`, first confirm Dalang deployed the new command rather than its previously cached command. Once the gate loads, `/status` provides diagnostics without a platform log viewer.
+
+## Railway and Render
+
+`railway.json` selects the Dockerfile and `/healthz`. Add a persistent volume at `/var/lib/tailscale`; secrets and volume creation remain dashboard settings. A public HTTPS domain is needed for browser onboarding. Railway only checks health during deployment. See [Railway configuration](https://docs.railway.com/config-as-code/reference) and [health checks](https://docs.railway.com/deployments/healthchecks).
+
+For Render, create a Blueprint from this repository. `render.yaml` creates the service with a 1 GB state disk and `/healthz`. It does not prompt for a Tailscale key. The paid `0.5c-512mb` plan is selected because persistent disks require paid services; review its charges before creating it. See [Render Blueprints](https://render.com/docs/blueprint-spec) and [persistent disks](https://render.com/docs/disks).
 
 ## Run locally
 
+For a new clone, generate a password as described above. Then:
+
 ```sh
-cp .env.example .env
-# Edit .env and replace TS_AUTHKEY.
 docker compose up --build -d
-docker compose logs -f
-```
-
-```sh
-curl --fail http://127.0.0.1:8080/healthz
+# Open http://localhost:8080 and use the setup credentials.
+curl --fail http://localhost:8080/healthz
 docker compose exec tailscale tailscale status
-docker compose exec tailscale tailscale ip -4
 ```
 
-Compose publishes the health port on localhost and stores identity in a named volume. `docker compose down` retains it; `docker compose down -v` deletes it and the next start needs a valid enrollment key.
+Compose publishes the public UI only on loopback and uses a named volume for state. `.env` is optional. `docker compose down` retains identity; `docker compose down -v` deletes the volume and requires a new device login.
 
-## Configuration
+## Optional environment settings
 
-All official [Tailscale Docker environment variables](https://tailscale.com/docs/features/containers/docker/docker-params) pass through unchanged. `.env.example` includes common optional settings. Compose loads `.env`; hosted services use their own runtime variables.
+Platforms with runtime variables can still use the official [Tailscale Docker options](https://tailscale.com/docs/features/containers/docker/docker-params). `.env.example` documents common choices. No values are required for browser onboarding.
 
-| Variable | Project default | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `TS_AUTHKEY` | unset | Enrollment secret for a new node; stored state can authenticate subsequent starts. |
+| `PORT` | `8080` | Public password-gated UI and health endpoints. |
+| `TS_AUTHKEY` | unset | Optional automatic enrollment instead of interactive login. |
 | `TS_HOSTNAME` | `tailquickie` | Name shown in the tailnet. |
-| `TS_STATE_DIR` | `/var/lib/tailscale` | Persistent identity directory; match your volume mount if changed. |
+| `TS_STATE_DIR` | `/var/lib/tailscale` | Persistent identity directory; match your volume if changed. |
+| `TS_USERSPACE` | `true` | Avoid a kernel tunnel device. |
 | `TS_AUTH_ONCE` | `true` | Reuse authenticated state on restart. |
-| `TS_USERSPACE` | `true` | Run without a kernel tunnel device. |
 | `TS_ACCEPT_DNS` | `false` | Keep the platform's resolver. |
-| `TS_EXTRA_ARGS` | `--advertise-exit-node --accept-routes --ssh` | Offer internet egress, accept advertised subnet routes, and enable Tailscale SSH. |
-| `PORT` | `8080` | Runtime HTTP health port. |
-| `TS_LOCAL_ADDR_PORT` | `0.0.0.0:$PORT` | Explicit override for the health listener; match the PaaS health port. |
-| `TS_ENABLE_HEALTH_CHECK` | `true` | Enable readiness checks; keep enabled for the supplied Docker/PaaS checks. |
-| `TS_ENABLE_METRICS` | `false` | Keep unauthenticated `/metrics` disabled on the HTTP listener. |
+| `TS_EXTRA_ARGS` | `--advertise-exit-node --accept-routes --ssh` | Default node features. |
+| `TS_BOOT_TIMEOUT` | `24h` | Login/bootstrap timeout before the web supervisor retries. |
+| `TS_ENABLE_HEALTH_CHECK` | `true` | Keep enabled for `/readyz`. |
+| `TS_ENABLE_METRICS` | `false` | Keep daemon metrics disabled. |
 
-`/healthz` returns `200` when the node has a tailnet IP and `503` before that. It does not prove connectivity to another peer. The public listener exposes readiness only by default; it is not a Tailscale proxy or dashboard.
+`TS_LOCAL_ADDR_PORT` is selected automatically on loopback for internal readiness checks. If overridden, it must remain a loopback address and use a different port from the public UI. The native web client uses another private port selected automatically.
 
-After successful enrollment, you may remove `TS_AUTHKEY` while retaining the state volume. State contains private keys: protect it as a secret, do not share it between running instances, and back it up securely. If you revoke the node, lose state, or need to reauthenticate, provide a valid key again.
+`TS_EXTRA_ARGS` replaces all default flags. With `TS_AUTH_ONCE=true`, upstream applies those flags during login, not on every restart. For an already-enrolled node, use `tailscale set --advertise-exit-node --accept-routes --ssh` if you need to apply them. `TS_HOSTNAME`, `TS_ACCEPT_DNS`, and `TS_ROUTES` update on restart. See the [pinned startup implementation](https://github.com/tailscale/tailscale/blob/v1.104.1/cmd/containerboot/tailscaled.go).
 
-### Exit nodes, subnet routes, and SSH
+To advertise a subnet reachable from the container, set `TS_ROUTES=10.0.0.0/24` and approve it in the admin console. Userspace routers support TCP/UDP forwarding and relayed pings, with limitations for other protocols. See [userspace routing](https://tailscale.com/docs/reference/kernel-vs-userspace-routers). An application in a separate PaaS service does not automatically share this node's network.
 
-The image enables these flags by default:
+## Verification
 
-```dotenv
-TS_EXTRA_ARGS="--advertise-exit-node --accept-routes --ssh"
-```
-
-Approve the exit node in the Tailscale admin console, then select it on your client. Accepting other nodes' subnet routes does not advertise the container's own networks. To advertise a network reachable **from this container**, set `TS_ROUTES=10.0.0.0/24` and approve the route. Tailnet access rules and provider networking restrictions still apply. Tailscale SSH also requires an SSH access rule in your tailnet policy and a valid user account in this container; it provides access to the container, not the PaaS host.
-
-Setting `TS_EXTRA_ARGS` replaces the whole default value. Preserve all three flags when adding options, for example `--advertise-exit-node --accept-routes --ssh --advertise-tags=tag:server`. To disable a feature explicitly, use `--advertise-exit-node=false`, `--accept-routes=false`, or `--ssh=false` in your replacement value.
-
-With `TS_AUTH_ONCE=true`, upstream only applies `TS_EXTRA_ARGS` during login; changing it on an already-enrolled volume does not rerun login. To apply these defaults to an existing node, use the service's shell to run `tailscale set --advertise-exit-node --accept-routes --ssh` (locally: `docker compose exec tailscale tailscale set --advertise-exit-node --accept-routes --ssh`). `TS_HOSTNAME`, `TS_ACCEPT_DNS`, and `TS_ROUTES` do update on restart. See the [pinned upstream startup code](https://github.com/tailscale/tailscale/blob/v1.104.1/cmd/containerboot/tailscaled.go).
-
-[Userspace routers](https://tailscale.com/docs/reference/kernel-vs-userspace-routers) support TCP/UDP forwarding and relayed pings, with limitations for other protocols. For heavier routing workloads, use a host that supports kernel networking: set `TS_USERSPACE=false`, expose `/dev/net/tun`, grant the required network capabilities, and configure IP forwarding. The supplied PaaS configs use userspace mode.
-
-### Accessing services
-
-This repository deploys the node itself. To reach another tailnet service from an application in the same container/network namespace, enable `TS_SOCKS5_SERVER=127.0.0.1:1055` or `TS_OUTBOUND_HTTP_PROXY_LISTEN=127.0.0.1:1055` and configure that application's proxy settings. [Userspace networking](https://tailscale.com/docs/concepts/userspace-networking) does not transparently route every process's outbound traffic.
-
-For inbound access, add your application and configure [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) using `TS_SERVE_CONFIG`. A separately deployed PaaS service does not automatically share this node's network. Keep unauthenticated proxy listeners off the public internet.
-
-## Verify and update
-
-Requires Docker and Python 3, with no Tailscale credentials:
+Requires Docker and Python 3, without a real Tailscale account or enrollment key:
 
 ```sh
 docker build --check .
@@ -115,18 +113,13 @@ docker build -t tailquickie:test .
 python3 tests/smoke.py
 ```
 
-The smoke test checks port handling, command passthrough, daemon startup with all Linux capabilities dropped, readiness failure before login, disabled metrics, state retention, clean shutdown, and OpenRC service launches. It runs without network access and does not authenticate against a live tailnet. After deployment, verify a real enrollment, restart with the same volume, and test the peer or exit route you intend to use.
+Tests exercise the real native web client, password protection, API access, cross-origin rejection, failed-login limiting, pre-login liveness, readiness failure, bootstrap retries, state retention, shutdown, and simulated OpenRC startup. One browser test runs with a 128 MiB memory limit. These isolated tests have no network access and do not prove real account enrollment, live Incus conversion, or performance under routing load.
 
-To update Tailscale, verify the current stable release and multi-platform digest, change the Dockerfile's tag and digest together, run these checks, and redeploy with the existing state volume.
+After deploying, finish a real browser login, confirm the device in your tailnet, restart it with the same state, and test your intended peer or exit route. Dependabot checks the pinned image and GitHub Actions weekly.
 
 ## Sources
 
-Research checked on October 19, 2026:
-
-- [Official Docker image and tags](https://hub.docker.com/r/tailscale/tailscale)
-- [Tailscale standalone Docker guide](https://tailscale.com/docs/features/containers/docker/how-to/connect-docker-standalone)
+- [Tailscale device web interface](https://tailscale.com/docs/features/client/device-web-interface)
+- [Tailscale CLI web command](https://tailscale.com/docs/reference/tailscale-cli#web)
 - [Tailscale Docker configuration](https://tailscale.com/docs/features/containers/docker/docker-params)
-- [Existing Render Tailscale template](https://render.com/templates/tailscale)
-- [Existing Railway Tailscale template](https://railway.com/deploy/tailscale-1)
-
-These templates informed the deployment pattern; this project uses the official image and supervisor directly.
+- [Alpine OpenRC](https://wiki.alpinelinux.org/wiki/OpenRC)
