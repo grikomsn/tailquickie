@@ -165,24 +165,24 @@ cat > /app/start.sh <<'SCRIPT'
 #!/bin/sh
 exec /sbin/tini -s -- /usr/local/bin/entrypoint.sh python3 /app/server.py
 SCRIPT
-cat > /etc/init.d/dalang-app <<'SERVICE'
+cat > /etc/init.d/tailquickie-app <<'SERVICE'
 #!/sbin/openrc-run
 command="/app/start.sh"
 command_background=true
-pidfile="/run/dalang-app.pid"
-output_log="/tmp/dalang-app.log"
-error_log="/tmp/dalang-app.log"
+pidfile="/run/tailquickie-app.pid"
+output_log="/tmp/tailquickie-app.log"
+error_log="/tmp/tailquickie-app.log"
 SERVICE
-chmod +x /app/start.sh /etc/init.d/dalang-app
+chmod +x /app/start.sh /etc/init.d/tailquickie-app
 mkdir -p /run/openrc
 touch /run/openrc/softlevel
-rc-update add dalang-app default
-rc-service dalang-app start
+rc-update add tailquickie-app default
+rc-service tailquickie-app start
 '''
         docker("exec", name, "/bin/sh", "-c", setup)
         self.wait_for_ui(name)
         self.assertEqual(self.request(name)["status"], 401)
-        docker("exec", name, "rc-service", "dalang-app", "stop")
+        docker("exec", name, "rc-service", "tailquickie-app", "stop")
 
 
 if __name__ == "__main__":

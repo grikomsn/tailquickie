@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Apply defaults here so Docker-to-Incus conversion cannot discard them.
+# Apply defaults consistently across container runtimes.
 export PORT="${PORT:-8080}"
 export TS_USERSPACE="${TS_USERSPACE-true}"
 export TS_STATE_DIR="${TS_STATE_DIR-/var/lib/tailscale}"
