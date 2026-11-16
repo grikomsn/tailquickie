@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM tailscale/tailscale:v1.104.1@sha256:87c55d6be56ad85b3d8bceca5f87f73de288c609131460dd1be1874c250cc41d
+FROM tailscale/tailscale:v1.104.7@sha256:72c1e19e0aedca96b8533bbb0b4368564410ff20b17e53b804eb6c1f04a31be4
 
 # Support service-based startup as well as Docker.
 RUN apk add --no-cache openrc python3 tini && \
